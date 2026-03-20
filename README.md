@@ -1,2 +1,207 @@
-# cone
-Merge a C project into a single file
+# **cone**
+
+**C-ONE**: merge a C project into a single file.
+
+> **⚠️ Prototype**: This is a work in progress, not a polished tool yet.
+> Use with caution and report any issues you find.
+> Currently tested only on Linux and Windows.
+
+Point it at a root header or a source directory. It crawls your `#include` graph, finds every `.h` and `.c` that belongs to the project, and spits out one amalgamated file (or two, in split mode).
+
+## Why
+
+You have a base C library used across multiple projects. Every time you want to use it somewhere, you either copy 15 files around or set up a unity build that lists them all by hand. Both are annoying. `cone` solves this: one command, one output file, done.
+
+## Build
+
+It's a single C file with zero dependencies, other than the standard C library (tested on Windows and Linux).Just compile it:
+
+```bash
+cc -O2 -o cone cone.c
+```
+
+or
+
+```powershell
+cl -O2 -Fe:cone.exe cone.c
+```
+
+## Quick start
+
+Say your library lives in `src/` and has a root header `src/mylib.h` that includes everything:
+
+```bash
+cone -I src/ -o mylib.h src/mylib.h
+```
+
+This produces a single `mylib.h` in STB-style that you use like:
+
+```c
+// in exactly ONE .c file:
+#define MYLIB_IMPLEMENTATION
+#include "mylib.h"
+
+// everywhere else, just:
+#include "mylib.h"
+```
+
+The output prefix (`MYLIB`) is automatically derived from the `-o` filename (stripped of extension and uppercased). If `-o` is not given, the first root's basename is used instead.
+
+## How it works
+
+1. You give it a root file (or a directory)
+2. It reads the file, scans for `#include "..."` directives
+3. For each local include, it resolves the path and repeats recursively
+4. Every time it finds a header, it also scans that header's directory for `.c` files
+5. It emits all headers first (in dependency order), then all sources
+6. Local `#include` lines are replaced by the actual file contents
+7. System includes like `#include <stdio.h>` are left where they are
+8. Include guards and `#pragma once` are stripped by default
+
+Files are deduped by canonical path, so the same header included from five places only appears once.
+
+## Options
+
+```
+cone [options] <file_or_dir> ...
+
+  -I <dir>          Include search path (repeatable, like gcc)
+  -o <file>         Output file (default: stdout)
+  -m, --mode <M>    Output mode: stb (default) or split
+  -x <pattern>      Exclude files/dirs matching pattern (repeatable, supports * and ? globs)
+  --no-strip        Keep include guards and #pragma once
+  --no-source       Headers only, skip .c auto-discovery
+  --list            Print discovered files, don't emit output
+  --stats           Print timing and size metrics
+  --watch, -w       Re-run when source files change
+  --help, -h        Show help
+```
+
+## Modes
+
+### STB (default)
+
+Single-file output with `#ifdef PREFIX_IMPLEMENTATION` / `#endif` wrapping the sources. This is the classic [STB-style](https://github.com/nothings/stb) header-only library pattern.
+
+### Split (`-m split`)
+
+Two files: a `.h` containing all headers and a `.c` containing all sources. The `.c` file automatically `#include`s the `.h`. The `.c` path is derived from the `-o` path by replacing the extension.
+
+```bash
+cone -I src/ -o mylib.h -m split src/mylib.h
+# produces: mylib.h + mylib.c
+```
+
+## Examples
+
+**Single root header** — cone discovers everything through includes:
+
+```bash
+cone -I src/ -o mylib.h src/mylib.h
+```
+
+**Directory scan** — just point at the folder:
+
+```bash
+cone -I src/ -o mylib.h src/
+```
+
+**Exclude test and vendor code with globs:**
+
+```bash
+cone -I src/ -o mylib.h -x test -x vendor -x "*.gen.*" src/
+```
+
+Exclude patterns are matched against individual path components. `-x test` skips any path containing a `test` component (e.g. `src/test/foo.c`). Patterns with `*` or `?` use glob matching against each component.
+
+**Split mode** — separate header and source amalgamation:
+
+```bash
+cone -I src/ -o mylib.h -m split src/mylib.h
+```
+
+**Header-only amalgamation** (no `.c` files):
+
+```bash
+cone -I src/ -o mylib.h --no-source src/
+```
+
+**List discovered files** without producing output:
+
+```bash
+cone -I src/ --list src/
+```
+
+**Watch mode** — rebuild automatically when files change:
+
+```bash
+cone -I src/ -o mylib.h --watch src/mylib.h
+```
+
+**See what's going on:**
+
+```bash
+$ cone -I src/ -o mylib.h --stats src/mylib.h
+cone: 12 headers + 8 sources = 20 files
+cone: wrote mylib.h
+cone: --- stats ---
+cone: files      20 (12 headers, 8 sources)
+cone: read       45231 bytes (44.2 KB)
+cone: written    41872 bytes (40.9 KB)
+cone: arena      52480 / 65536 bytes (pos / commit)
+cone: perm       1248 / 65536 bytes (pos / commit)
+cone: discover   1.24 ms
+cone: emit       0.87 ms
+cone: total      2.11 ms
+```
+
+## Output structure
+
+In STB mode (default), the output looks like:
+
+```c
+// Generated by cone — 12 headers + 8 sources = 20 files
+
+#ifndef MYLIB_H
+#define MYLIB_H
+
+// src/types.h =====================================================
+...
+// src/memory.h ====================================================
+...
+// src/str.h =======================================================
+...
+
+#endif /* MYLIB_H */
+
+#ifdef MYLIB_IMPLEMENTATION
+#ifndef MYLIB_IMPLEMENTATION_GUARD
+#define MYLIB_IMPLEMENTATION_GUARD
+
+// src/memory.c ====================================================
+...
+// src/str.c =======================================================
+...
+
+#endif /* MYLIB_IMPLEMENTATION_GUARD */
+#endif /* MYLIB_IMPLEMENTATION */
+```
+
+The header guard prevents double-inclusion. The implementation guard prevents redefinition if you accidentally include the file twice with `IMPLEMENTATION` defined.
+
+In split mode (`-m split`), the `.c` file looks like:
+
+```c
+// Generated by cone — source amalgamation
+
+#include "mylib.h"
+
+// src/memory.c ====================================================
+...
+// src/str.c =======================================================
+...
+```
+
+## License
+
+Public domain. Do whatever you want with it.
